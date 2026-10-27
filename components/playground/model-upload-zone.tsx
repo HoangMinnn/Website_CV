@@ -3,10 +3,9 @@
 import { useState, useRef, useEffect } from 'react'
 import {
   Upload, CheckCircle2, FileCode2, Layers, AlertCircle, RotateCcw,
-  Search, Tag, Loader2, Info, SlidersHorizontal, FileText, ChevronDown, ChevronUp, X, Sparkles
+  Search, Tag, Loader2, Info, SlidersHorizontal, FileText, ChevronDown, ChevronUp, X
 } from 'lucide-react'
 import { ModelInfo, NormKey } from './types'
-import { PRESET_MODELS } from './sample-data'
 import { Button } from '@/components/ui/button'
 
 const SUPPORTED_EXTS = ['.onnx', '.pt', '.pth', '.tflite', '.h5', '.bin', '.pb', '.keras', '.ckpt', '.torchscript']
@@ -18,7 +17,6 @@ interface ModelUploadZoneProps {
 }
 
 export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZoneProps) {
-  const [modelTab, setModelTab] = useState<'upload' | 'preset'>('preset')
   const [isDragging, setIsDragging] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
@@ -209,78 +207,8 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
 
   return (
     <div className="space-y-4">
-      {/* Switcher Tab between Preset Models and Custom Upload */}
+      {/* Upload Zone for Custom Models */}
       {!currentModel && (
-        <div className="flex items-center gap-1 p-1 bg-muted/60 rounded-xl border border-border/80 text-xs">
-          <button
-            type="button"
-            onClick={() => setModelTab('preset')}
-            className={`flex-1 py-2 px-3 rounded-lg font-medium transition-all flex items-center justify-center gap-1.5 ${
-              modelTab === 'preset'
-                ? 'bg-background text-primary font-bold shadow-xs'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Mô hình mẫu có sẵn (Chạy ngay)</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setModelTab('upload')}
-            className={`flex-1 py-2 px-3 rounded-lg font-medium transition-all flex items-center justify-center gap-1.5 ${
-              modelTab === 'upload'
-                ? 'bg-background text-primary font-bold shadow-xs'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <Upload className="w-3.5 h-3.5" />
-            <span>Tải file mô hình từ máy (.pt, .onnx...)</span>
-          </button>
-        </div>
-      )}
-
-      {/* 1. Preset Models Grid */}
-      {!currentModel && modelTab === 'preset' && (
-        <div className="space-y-3">
-          <div className="grid sm:grid-cols-2 gap-2.5">
-            {PRESET_MODELS.map((p) => (
-              <div
-                key={p.id}
-                onClick={() => {
-                  setSelectedTask(p.type)
-                  onModelSelect(p)
-                }}
-                className="p-3 rounded-xl border border-border/70 bg-card hover:border-primary/50 hover:bg-primary/5 transition-all cursor-pointer group space-y-1.5 shadow-2xs"
-              >
-                <div className="flex items-start justify-between gap-1">
-                  <span className="font-semibold text-xs text-foreground group-hover:text-primary transition-colors">
-                    {p.name}
-                  </span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium flex-shrink-0">
-                    {p.type === 'detection' ? 'Phát hiện' : p.type === 'segmentation' ? 'Phân đoạn' : 'Phân loại'}
-                  </span>
-                </div>
-                <p className="text-[11px] text-muted-foreground line-clamp-2 leading-relaxed">
-                  {p.description}
-                </p>
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground/80 font-mono pt-0.5">
-                  <span className="text-foreground/90 font-semibold">{p.fileName}</span>
-                  <span>•</span>
-                  <span>{p.classesCount} nhãn</span>
-                  <span>•</span>
-                  <span>{p.sizeMB} MB</span>
-                </div>
-              </div>
-            ))}
-          </div>
-          <p className="text-[11px] text-muted-foreground text-center">
-            💡 Chọn một mô hình mẫu ở trên để kiểm thử ngay mà không cần tải file nặng từ máy tính.
-          </p>
-        </div>
-      )}
-
-      {/* 2. Custom Model Upload Zone */}
-      {!currentModel && modelTab === 'upload' && (
         <div
           onDragOver={(e) => {
             e.preventDefault()
@@ -289,7 +217,7 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           onClick={() => inputRef.current?.click()}
-          className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
+          className={`border-2 border-dashed rounded-xl p-7 text-center cursor-pointer transition-all ${
             isDragging
               ? 'border-primary bg-primary/10 scale-[0.99]'
               : 'border-border/80 hover:border-primary/60 bg-muted/20 hover:bg-muted/30'
@@ -299,7 +227,7 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
             <Upload className="w-6 h-6" />
           </div>
           <h4 className="font-semibold text-foreground text-sm mb-1">
-            Kéo thả file mô hình AI hoặc click để chọn từ bất kỳ thư mục nào trên máy
+            Kéo thả file mô hình AI hoặc click để chọn từ máy tính của bạn
           </h4>
           <p className="text-xs text-muted-foreground mb-3">
             Hỗ trợ tất cả định dạng: <span className="font-mono font-medium text-foreground">{SUPPORTED_EXTS.join(' ')}</span>
@@ -308,7 +236,7 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
           </p>
           <Button size="sm" variant="outline" className="pointer-events-none text-xs">
             <Upload className="w-3.5 h-3.5 mr-1.5" />
-            Chọn file model từ máy tính
+            Chọn file model từ máy tính (.pt, .onnx, .tflite, .h5...)
           </Button>
           <input
             ref={inputRef}

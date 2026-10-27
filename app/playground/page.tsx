@@ -54,8 +54,7 @@ export default function PlaygroundPage() {
       }
     }
 
-    // 1. If it's a preset model or has no custom file uploaded, run in-browser CV engine directly
-    if (model.isPretrained || !model.file) {
+    if (!model.file) {
       await runBrowserFallback('Client CV Engine (WebGPU / Wasm)')
       return
     }
