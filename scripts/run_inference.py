@@ -82,7 +82,11 @@ def names_to_list(raw):
             try:
                 raw = json.loads(s)
             except Exception:
-                return []
+                try:
+                    import yaml
+                    raw = yaml.safe_load(s)
+                except Exception:
+                    pass
     if isinstance(raw, dict):
         if not raw:
             return []
@@ -90,10 +94,10 @@ def names_to_list(raw):
         vals_int = all(isinstance(v, int) for v in raw.values())
         if vals_int and not keys_numeric:  # class_to_idx {name: idx}
             inv = {v: k for k, v in raw.items()}
-            return [str(inv.get(i, f"Class {i}")) for i in range(max(inv) + 1)]
+            return [str(inv.get(i, f"Lớp {i}")) for i in range(max(inv) + 1)]
         if keys_numeric:
             items = {int(k): v for k, v in raw.items()}
-            return [str(items.get(i, f"Class {i}")) for i in range(max(items) + 1)]
+            return [str(items.get(i, f"Lớp {i}")) for i in range(max(items) + 1)]
         return [str(v) for v in raw.values()]
     if isinstance(raw, (list, tuple)):
         if raw and all(isinstance(c, (str, int, float)) for c in raw):
@@ -139,24 +143,97 @@ def find_names(obj, depth=0):
 
 
 def load_labels_file(path):
+    """
+    Tải và phân tích nhãn từ file do người dùng cung cấp (.txt, .yaml, .yml, .json).
+    Hỗ trợ tất cả định dạng:
+      1. YAML YOLO (data.yaml): `names: [a, b]` hoặc `names:\n  0: a\n  1: b` hoặc `names:\n  - a\n  - b`
+      2. JSON: `["a", "b"]` hoặc `{"0": "a", "1": "b"}` hoặc `{"names": [...]}`
+      3. TXT: 1 dòng 1 nhãn, hoặc đánh số `0: a`, `0 a`, `0, a`, `0 - a`
+    """
     import re
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         text = f.read()
     stripped = text.strip()
+    if not stripped:
+        return []
+
+    # 1. Thử PyYAML nếu có
+    try:
+        import yaml
+        yd = yaml.safe_load(stripped)
+        if isinstance(yd, dict):
+            for k in ("names", "classes", "labels", "class_names"):
+                if k in yd:
+                    lst = names_to_list(yd[k])
+                    if lst:
+                        return lst
+            lst = names_to_list(yd)
+            if lst:
+                return lst
+        elif isinstance(yd, (list, tuple)):
+            lst = names_to_list(yd)
+            if lst:
+                return lst
+    except Exception:
+        pass
+
+    # 2. Thử JSON
     if stripped.startswith("{") or stripped.startswith("["):
         lst = names_to_list(stripped)
         if lst:
             return lst
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    pat = re.compile(r"^\d+\s*[:,\t ]\s*(.+)$")
-    if lines and all(pat.match(ln) for ln in lines):
-        lines = [pat.match(ln).group(1).strip().strip("'\"") for ln in lines]
-    return lines
+
+    # 3. Phân tích chuỗi YAML `names: [a, b]` bằng regex
+    names_block = re.search(r"names\s*:\s*\[([^\]]+)\]", stripped, re.IGNORECASE)
+    if names_block:
+        raw_items = [x.strip().strip("'\"") for x in names_block.group(1).split(",") if x.strip()]
+        if raw_items:
+            return raw_items
+
+    # 4. Phân tích từng dòng (bỏ comment và lọc tên)
+    raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+    # Nếu file YAML có khối `names:`
+    in_names = False
+    has_names_key = any(re.match(r"^names\s*:", ln, re.IGNORECASE) for ln in raw_lines)
+    if has_names_key:
+        filtered = []
+        for ln in raw_lines:
+            if re.match(r"^names\s*:", ln, re.IGNORECASE):
+                in_names = True
+                continue
+            if in_names:
+                # Gặp key mới cấp 0 thì dừng
+                if re.match(r"^[a-zA-Z0-9_-]+\s*:", ln) and not ln.startswith("-"):
+                    break
+                filtered.append(ln)
+        if filtered:
+            raw_lines = filtered
+
+    # Lọc bỏ các header như `nc: 2`, `train: ...`, `val: ...`
+    valid_lines = []
+    pat = re.compile(r"^(?:-\s*)?(?:\d+\s*[:,\t \-]\s*)?(.+)$")
+    for ln in raw_lines:
+        if re.match(r"^nc\s*:\s*\d+", ln, re.IGNORECASE):
+            continue
+        if re.match(r"^(train|val|test|path)\s*:", ln, re.IGNORECASE):
+            continue
+        m = pat.match(ln)
+        if m:
+            val = m.group(1).strip().strip("'\"")
+            if val and not val.endswith(":"):
+                valid_lines.append(val)
+        else:
+            val = ln.strip().strip("'\"")
+            if val and not val.endswith(":"):
+                valid_lines.append(val)
+
+    return valid_lines if valid_lines else [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
 def label_of(names, idx):
     idx = int(idx)
-    return names[idx] if 0 <= idx < len(names) else f"Class {idx}"
+    return names[idx] if 0 <= idx < len(names) else f"Lớp {idx}"
 
 
 # --------------------------------------------------------------------------- image
@@ -226,7 +303,7 @@ def classify_output(arr, names):
     if v.size == 1:
         p = float(v[0]) if 0.0 <= v[0] <= 1.0 else float(1.0 / (1.0 + np.exp(-v[0])))
         probs = np.array([1.0 - p, p])
-        labels = names if len(names) == 2 else ["Class 0", "Class 1"]
+        labels = names if len(names) == 2 else ["Lớp 0", "Lớp 1"]
     else:
         if np.all(v >= 0) and abs(v.sum() - 1.0) < 1e-3:
             probs = v
@@ -355,13 +432,15 @@ def summarize_dets(dets):
 
 
 def finalize(base, task, names, nc, latency_ms, extra):
-    classes = names if names else [f"Class {i}" for i in range(nc or 0)]
+    classes = names if names else [f"Lớp {i}" for i in range(nc or 0)]
+    has_embedded = bool(names and len(names) > 0)
     out = dict(base)
     out.update({
         "success": True, "modelType": task,
         "latencyMs": round(float(latency_ms), 1),
         "fps": round(1000.0 / max(latency_ms, 0.1), 1),
         "modelClasses": classes, "totalModelClasses": len(classes),
+        "hasEmbeddedLabels": has_embedded,
         "timestamp": time.strftime("%H:%M:%S"),
     })
     out.update(extra)
@@ -370,7 +449,9 @@ def finalize(base, task, names, nc, latency_ms, extra):
 
 def inspect_payload(base, task, names, nc, input_shape, notes):
     classes = names if names else []
+    has_embedded = bool(names and len(names) > 0)
     return dict(base, success=True, task=task, classes=classes,
+                hasEmbeddedLabels=has_embedded,
                 classesCount=len(classes) if classes else int(nc or 0),
                 inputShape=input_shape, notes=notes)
 
@@ -492,8 +573,8 @@ def run_with_runner(runner, args, img, names, base, notes):
     if names and task == "classification" and nc != len(names):
         notes.append(f"Mô hình có {nc} đầu ra nhưng danh sách nhãn có {len(names)} tên.")
     if not names:
-        notes.append("Mô hình không lưu tên nhãn, kết quả hiển thị theo chỉ số lớp (Class i). "
-                     "Có thể tải thêm file nhãn (.txt/.json) để hiển thị tên.")
+        notes.append("Mô hình không lưu tên nhãn trong file. Kết quả tạm thời hiển thị theo chỉ số lớp (Lớp 0, Lớp 1...). "
+                     "Bạn có thể tải thêm file nhãn (.txt/.yaml/.json) để hiển thị tên đối tượng.")
     in_shape = (f"1 x {runner.channels} x {used[0]} x {used[1]}" if runner.layout == "NCHW"
                 else f"1 x {used[0]} x {used[1]} x {runner.channels}")
     pre = {"imgsz": [used[0], used[1]], "norm": NORM_LABELS.get(norm, norm), "normKey": norm,
@@ -764,7 +845,7 @@ def run_tv_detection(model, args, img, names, base, notes, nc):
         x1, y1, x2, y2 = boxes[i]
         dets.append(make_det(len(dets), label_of(names, labels[i]), int(labels[i]), float(scores[i]),
                              x1 / w, y1 / h, x2 / w, y2 / h, polygon=poly))
-    shown = [n for n in names if n != "__background__"] if names else [f"Class {i}" for i in range(1, nc)]
+    shown = [n for n in names if n != "__background__"] if names else [f"Lớp {i}" for i in range(1, nc)]
     return finalize(base, "detection", shown, nc - 1, latency, {
         "device": device_label_torch(device), "detections": dets, "topClasses": summarize_dets(dets),
         "notes": notes, "preprocess": {"imgsz": [h, w], "norm": "torchvision nội bộ (GeneralizedRCNNTransform)", "channels": 3},

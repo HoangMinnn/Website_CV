@@ -18,8 +18,10 @@ export interface ModelInfo {
   datasetPreset?: string
   customLabels?: string
   framework?: string
-  /** Optional labels file (.txt/.json) used when the model has no class names stored */
+  /** Optional labels file (.txt/.json/.yaml) used when the model has no class names stored */
   labelsFile?: File | null
+  /** True if the model already contains embedded class names (e.g. YOLO model.names or ONNX metadata) */
+  hasEmbeddedLabels?: boolean
   /** Preprocessing overrides for non-Ultralytics models (0 / 'auto' = detect automatically) */
   imgsz?: number
   norm?: NormKey

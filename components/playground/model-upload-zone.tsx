@@ -16,6 +16,97 @@ interface ModelUploadZoneProps {
   onModelSelect: (model: ModelInfo | null) => void
 }
 
+/**
+ * Client-side parser for labels file (.txt, .yaml, .yml, .json)
+ */
+export async function parseLabelsFile(file: File): Promise<string[]> {
+  try {
+    const text = await file.text()
+    const trimmed = text.trim()
+    if (!trimmed) return []
+
+    // 1. JSON
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (Array.isArray(parsed)) {
+          return parsed.map((x) => String(x).trim()).filter(Boolean)
+        }
+        if (typeof parsed === 'object' && parsed !== null) {
+          for (const k of ['names', 'classes', 'labels', 'class_names']) {
+            if (Array.isArray(parsed[k])) {
+              return parsed[k].map((x: any) => String(x).trim()).filter(Boolean)
+            }
+            if (typeof parsed[k] === 'object' && parsed[k] !== null) {
+              return Object.values(parsed[k]).map((x: any) => String(x).trim()).filter(Boolean)
+            }
+          }
+          const keys = Object.keys(parsed)
+          if (keys.every((k) => !isNaN(Number(k)))) {
+            return keys
+              .sort((a, b) => Number(a) - Number(b))
+              .map((k) => String(parsed[k]).trim())
+              .filter(Boolean)
+          }
+          return Object.values(parsed).map((x) => String(x).trim()).filter(Boolean)
+        }
+      } catch {
+        // Fallthrough to YAML/lines
+      }
+    }
+
+    // 2. YAML inline: names: [a, b, c]
+    const inlineMatch = trimmed.match(/names\s*:\s*\[([^\]]+)\]/i)
+    if (inlineMatch && inlineMatch[1]) {
+      const items = inlineMatch[1]
+        .split(',')
+        .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+        .filter(Boolean)
+      if (items.length > 0) return items
+    }
+
+    // 3. Lines & YAML block
+    const rawLines = trimmed.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+
+    let inNames = false
+    const hasNamesKey = rawLines.some((l) => /^names\s*:/i.test(l))
+    let targetLines = rawLines
+    if (hasNamesKey) {
+      const filtered: string[] = []
+      for (const l of rawLines) {
+        if (/^names\s*:/i.test(l)) {
+          inNames = true
+          continue
+        }
+        if (inNames) {
+          if (/^[a-zA-Z0-9_-]+\s*:/i.test(l) && !l.startsWith('-')) break
+          filtered.push(l)
+        }
+      }
+      if (filtered.length > 0) targetLines = filtered
+    }
+
+    const result: string[] = []
+    const pat = /^(?:-\s*)?(?:\d+\s*[:,\t \-]\s*)?(.+)$/
+    for (const line of targetLines) {
+      if (/^nc\s*:\s*\d+/i.test(line)) continue
+      if (/^(train|val|test|path)\s*:/i.test(line)) continue
+      const m = line.match(pat)
+      if (m && m[1]) {
+        const val = m[1].trim().replace(/^['"]|['"]$/g, '')
+        if (val && !val.endsWith(':')) result.push(val)
+      } else {
+        const val = line.trim().replace(/^['"]|['"]$/g, '')
+        if (val && !val.endsWith(':')) result.push(val)
+      }
+    }
+    return result.filter(Boolean)
+  } catch (e) {
+    console.warn('Lỗi khi đọc file nhãn:', e)
+    return []
+  }
+}
+
 export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -42,6 +133,12 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
     setIsAnalyzing(true)
     setAnalysisError(null)
 
+    // Parse labels file on client side immediately if provided
+    let clientParsedLabels: string[] = []
+    if (labelsFile) {
+      clientParsedLabels = await parseLabelsFile(labelsFile)
+    }
+
     try {
       const formData = new FormData()
       formData.append('modelFile', modelFile)
@@ -60,6 +157,7 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
       let finalTask: 'detection' | 'classification' | 'segmentation' = selectedTask
       let detectedClasses: string[] = []
       let detectedCount = 0
+      let hasEmbedded = false
       let frameworkName = ext === '.pt' || ext === '.pth' ? 'PyTorch' : 'ONNX / Tensor'
       let archName = frameworkName
       let inputShape = 'Auto-detect'
@@ -71,8 +169,13 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
         if (data.task && ['detection', 'classification', 'segmentation'].includes(data.task)) {
           finalTask = data.task
         }
-        detectedClasses = Array.isArray(data.classes) ? data.classes : []
+        const serverClasses = Array.isArray(data.classes) ? data.classes : []
+        hasEmbedded = Boolean(data.hasEmbeddedLabels ?? (serverClasses.length > 0 && !labelsFile))
+        detectedClasses = serverClasses.length > 0 ? serverClasses : clientParsedLabels
         detectedCount = data.classesCount || detectedClasses.length
+        if (detectedClasses.length === 0 && detectedCount > 0) {
+          detectedClasses = Array.from({ length: detectedCount }, (_, i) => `Lớp ${i}`)
+        }
         frameworkName = data.framework || frameworkName
         archName = data.architecture || frameworkName
         inputShape = data.inputShape || inputShape
@@ -81,23 +184,16 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
       } else {
         // Smart client-side fallback if server lacks Python/Torch
         isFallback = true
-        if (labelsFile) {
-          try {
-            const text = await labelsFile.text()
-            detectedClasses = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-            detectedCount = detectedClasses.length
-          } catch {
-            detectedClasses = ['Object 1', 'Object 2', 'Object 3']
-            detectedCount = 3
-          }
-        } else {
-          detectedClasses = ['person', 'bicycle', 'car', 'dog', 'cat', 'item', 'object']
-          detectedCount = detectedClasses.length
-        }
+        detectedClasses = clientParsedLabels
+        detectedCount = detectedClasses.length
+        hasEmbedded = false
         notes = [
           '⚡ Chế độ Client CV: Máy chủ chưa có thư viện Python đầy đủ.',
-          'Mô hình sẽ chạy suy luận thị giác máy tính trực tiếp trên trình duyệt (WebGPU/Wasm).'
+          'Mô hình sẽ chạy suy luận trực tiếp trên trình duyệt (WebGPU/Wasm).'
         ]
+        if (detectedClasses.length === 0) {
+          notes.push('⚠️ Chưa có file nhãn đi kèm. Bạn hãy tải file nhãn (.txt/.yaml/.json) để hiển thị đúng tên đối tượng.')
+        }
         setAnalysisError(null)
       }
 
@@ -110,6 +206,7 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
         fileName: modelFile.name,
         file: modelFile,
         labelsFile: finalLabelsFile,
+        hasEmbeddedLabels: hasEmbedded,
         type: finalTask,
         sizeMB: +(modelFile.size / (1024 * 1024)).toFixed(2),
         inputShape,
@@ -128,22 +225,29 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
       const ext = '.' + modelFile.name.split('.').pop()?.toLowerCase()
       const frameworkName = ext === '.pt' || ext === '.pth' ? 'PyTorch / YOLO' : ext === '.onnx' ? 'ONNX Runtime' : 'Deep Learning'
       const finalLabelsFile = labelsFile !== undefined ? labelsFile : (currentModel?.labelsFile ?? null)
+      const detectedClasses = clientParsedLabels
       onModelSelect({
         id: currentModel?.id || ('model-' + Date.now()),
         name: modelFile.name.replace(/\.[^/.]+$/, ''),
         fileName: modelFile.name,
         file: modelFile,
         labelsFile: finalLabelsFile,
+        hasEmbeddedLabels: false,
         type: selectedTask,
         sizeMB: +(modelFile.size / (1024 * 1024)).toFixed(2),
         inputShape: 'Auto (Client)',
         architecture: frameworkName,
-        classesCount: 7,
-        classes: ['person', 'bicycle', 'car', 'dog', 'cat', 'item', 'object'],
+        classesCount: detectedClasses.length,
+        classes: detectedClasses,
         framework: `${frameworkName} (Client Mode)`,
         imgsz: imgsz ?? currentModel?.imgsz ?? 0,
         norm: norm ?? currentModel?.norm ?? 'auto',
-        notes: ['⚡ Chế độ dự phòng: Chạy trực tiếp trên trình duyệt bằng Client CV Engine.'],
+        notes: [
+          '⚡ Chế độ dự phòng: Chạy trực tiếp trên trình duyệt bằng Client CV Engine.',
+          detectedClasses.length === 0
+            ? '⚠️ Chưa có nhãn đi kèm. Hãy tải file nhãn (.txt/.yaml/.json) để hiển thị tên.'
+            : `✓ Đã nạp ${detectedClasses.length} nhãn từ file nhãn.`
+        ],
         isPretrained: false,
         description: `Mô hình: ${modelFile.name}`,
       })
@@ -168,8 +272,18 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
     inspectModelWithFiles(file, null)
   }
 
-  const handleAttachLabels = (file: File) => {
+  const handleAttachLabels = async (file: File) => {
     if (!currentModel?.file) return
+    const parsed = await parseLabelsFile(file)
+    if (parsed.length > 0) {
+      onModelSelect({
+        ...currentModel,
+        labelsFile: file,
+        classes: parsed,
+        classesCount: parsed.length,
+        hasEmbeddedLabels: false,
+      })
+    }
     inspectModelWithFiles(currentModel.file, file, currentModel.imgsz, currentModel.norm)
   }
 
@@ -362,20 +476,31 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
           </div>
 
           {/* Real Classes Extracted From Model */}
-          <div className="pt-2 border-t border-border/60 space-y-2">
+          <div className="pt-2 border-t border-border/60 space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                 <Tag className="w-3.5 h-3.5 text-primary" />
-                <span>Danh sách nhãn của mô hình này ({currentModel.classesCount} nhãn):</span>
+                <span>
+                  Danh sách nhãn của mô hình này ({currentModel.classesCount || currentModel.classes?.length || 0} nhãn):
+                </span>
               </label>
-              {currentModel.classesCount > 0 && (
-                <span className="text-[10px] text-green-600 dark:text-green-400 font-medium">
-                  ✓ {currentModel.labelsFile ? 'Từ file nhãn tải kèm' : 'Đọc trực tiếp từ model'}
+              {currentModel.labelsFile ? (
+                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1">
+                  ✓ File nhãn tải kèm: {currentModel.labelsFile.name}
+                </span>
+              ) : currentModel.hasEmbeddedLabels ? (
+                <span className="text-[10px] text-green-600 dark:text-green-400 font-medium bg-green-500/10 px-2 py-0.5 rounded-full border border-green-500/20 flex items-center gap-1">
+                  ✓ Đọc trực tiếp từ mô hình
+                </span>
+              ) : (
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20 flex items-center gap-1">
+                  ⚠️ Chưa có tên nhãn
                 </span>
               )}
             </div>
 
-            {currentModel.classes && currentModel.classes.length > 0 ? (
+            {/* If model has class names (either embedded or from uploaded labels file) */}
+            {currentModel.classes && currentModel.classes.length > 0 && (currentModel.hasEmbeddedLabels || currentModel.labelsFile) ? (
               <div className="space-y-2">
                 {currentModel.classes.length > 10 && (
                   <div className="relative">
@@ -411,24 +536,40 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
                 <p className="text-[10px] text-muted-foreground leading-relaxed flex items-start gap-1">
                   <CheckCircle2 className="w-3 h-3 text-green-500 mt-0.5 flex-shrink-0" />
                   <span>
-                    Chỉ đúng {currentModel.classesCount} nhãn này mới có thể xuất hiện khi chạy dự đoán. Tuyệt đối không có nhãn ngoài mô hình.
+                    Chỉ đúng {currentModel.classes.length} nhãn của mô hình này mới có thể xuất hiện khi chạy dự đoán. Tuyệt đối không xuất hiện bất kỳ nhãn đề xuất nào ngoài mô hình.
                   </span>
                 </p>
               </div>
             ) : (
-              <div className="p-3 rounded-lg bg-muted/20 border border-border/60 text-xs text-muted-foreground space-y-2">
-                <div>
-                  <p className="font-medium text-foreground mb-0.5">Mô hình không lưu kèm tên nhãn trong file</p>
-                  <p className="text-[11px]">
-                    Kết quả sẽ hiển thị theo mã số lớp (Class 0, Class 1...). Bạn có thể tải kèm file nhãn text (.txt / .json) để hiển thị tên đúng.
-                  </p>
+              /* If model does NOT have labels stored in file and user hasn't uploaded a labels file */
+              <div className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-xs space-y-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
+                  <div className="space-y-1">
+                    <p className="font-semibold text-foreground">
+                      Mô hình không lưu kèm tên nhãn trong file
+                    </p>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Mô hình có {currentModel.classesCount > 0 ? `${currentModel.classesCount} lớp đầu ra` : 'đầu ra chưa có nhãn chữ'} (kết quả đang hiển thị tạm dạng Lớp 0, Lớp 1...). Bạn hãy tải lên file nhãn để trang web hiển thị đúng tên đối tượng thực tế của mô hình:
+                    </p>
+                  </div>
                 </div>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => labelsInputRef.current?.click()}
+                  className="w-full text-xs h-9 bg-amber-600 hover:bg-amber-700 text-white font-medium flex items-center justify-center gap-2 shadow-xs"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  Tải file nhãn lên (.txt, .yaml, .json, classes.txt, data.yaml)
+                </Button>
               </div>
             )}
 
-            {/* Optional Labels File Attachment */}
+            {/* Optional Labels File Attachment / Management Bar */}
             <div className="pt-1 flex items-center justify-between text-xs">
-              <span className="text-[11px] text-muted-foreground">File nhãn phụ trợ (tùy chọn):</span>
+              <span className="text-[11px] text-muted-foreground">File nhãn tùy chỉnh (.txt / .yaml / .json):</span>
               {currentModel.labelsFile ? (
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-[11px] text-foreground flex items-center gap-1 bg-muted/60 px-2 py-0.5 rounded">
@@ -442,7 +583,7 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
                       handleRemoveLabels()
                     }}
                     className="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
-                    title="Xoá / gỡ bỏ file nhãn này"
+                    title="Gỡ bỏ file nhãn này"
                     aria-label="Xoá file nhãn"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -457,7 +598,7 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
                   className="text-xs h-7 text-primary hover:text-primary"
                 >
                   <FileText className="w-3 h-3 mr-1" />
-                  Đính kèm file nhãn (.txt/.json)
+                  {currentModel.hasEmbeddedLabels ? 'Đính kèm file nhãn thay thế' : 'Tải file nhãn'}
                 </Button>
               )}
               <input

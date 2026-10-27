@@ -7,87 +7,6 @@
 
 import { ModelInfo, InferenceResult, DetectionBox } from '@/components/playground/types'
 
-export interface DatasetClassPreset {
-  id: string
-  name: string
-  task: 'detection' | 'classification' | 'segmentation'
-  classes: string[]
-  description: string
-}
-
-export const DATASET_CLASS_PRESETS: DatasetClassPreset[] = [
-  {
-    id: 'coco_80',
-    name: 'COCO Dataset (80 lớp)',
-    task: 'detection',
-    classes: [
-      'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
-      'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat',
-      'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack',
-      'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
-      'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-      'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple',
-      'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake',
-      'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop',
-      'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-      'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-    ],
-    description: 'Bộ dữ liệu chuẩn mực nhất của YOLOv5, YOLOv8, YOLOv11 cho phát hiện đối tượng đa lớp.',
-  },
-  {
-    id: 'dog_cat',
-    name: 'Chó & Mèo (Dogs vs Cats)',
-    task: 'detection',
-    classes: ['Chó (Dog)', 'Mèo (Cat)'],
-    description: 'Mô hình phân loại hoặc phát hiện vật nuôi chó mèo chuyên dụng.',
-  },
-  {
-    id: 'face_mask',
-    name: 'Khẩu trang Y tế (Face Mask Detection)',
-    task: 'detection',
-    classes: ['Đeo khẩu trang (With Mask)', 'Không đeo khẩu trang (Without Mask)', 'Khuôn mặt (Face)'],
-    description: 'Mô hình giám sát phòng dịch nhận diện người đeo/không đeo khẩu trang.',
-  },
-  {
-    id: 'traffic_signs',
-    name: 'Biển báo giao thông (Traffic Signs)',
-    task: 'detection',
-    classes: ['Biển dừng (Stop)', 'Cấm đi ngược chiều (No Entry)', 'Giới hạn tốc độ (Speed Limit)', 'Đèn tín hiệu (Traffic Light)', 'Cảnh báo nguy hiểm (Warning)'],
-    description: 'Mô hình xe tự hành và thị giác đường phố nhận diện biển báo.',
-  },
-  {
-    id: 'fruits',
-    name: 'Phân loại Hoa quả (Fruit Recognition)',
-    task: 'classification',
-    classes: ['Quả Táo (Apple)', 'Quả Chuối (Banana)', 'Quả Cam (Orange)', 'Quả Dâu tây (Strawberry)', 'Dưa hấu (Watermelon)'],
-    description: 'Mô hình nông nghiệp nhận diện và phân loại nông sản/trái cây.',
-  },
-  {
-    id: 'cifar_10',
-    name: 'CIFAR-10 (10 lớp CNN)',
-    task: 'classification',
-    classes: ['Máy bay (Airplane)', 'Ô tô (Automobile)', 'Chim (Bird)', 'Mèo (Cat)', 'Nai (Deer)', 'Chó (Dog)', 'Ếch (Frog)', 'Ngựa (Horse)', 'Tàu thủy (Ship)', 'Xe tải (Truck)'],
-    description: 'Bộ dữ liệu kinh điển 10 lớp cho các mạng ResNet, MobileNet, VGG.',
-  },
-  {
-    id: 'fire_smoke',
-    name: 'Phát hiện Cháy nổ & Khói (Fire & Smoke)',
-    task: 'detection',
-    classes: ['Ngọn Lửa (Fire)', 'Khói (Smoke)'],
-    description: 'Mô hình camera an ninh cảnh báo sớm hỏa hoạn trong nhà và rừng.',
-  },
-  {
-    id: 'pascal_voc',
-    name: 'Pascal VOC (20 lớp)',
-    task: 'detection',
-    classes: [
-      'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow',
-      'diningtable', 'dog', 'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor'
-    ],
-    description: 'Bộ chuẩn 20 lớp đối tượng giao thông, con người và nội thất.',
-  },
-]
-
 // Distinct vibrant colors for visual bounding boxes
 const PALETTE = [
   '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
@@ -501,15 +420,20 @@ export async function runCVModelInference(
   // 1. Load image into memory
   const img = await loadImage(imageSrc)
 
-  // 2. Extract model classes
-  const classes = model.classes && model.classes.length > 0
-    ? model.classes
-    : DATASET_CLASS_PRESETS[0].classes
+  // 2. Extract model classes: ONLY use model.classes if available!
+  // If no classes exist, fallback strictly to indexed classes based on classesCount.
+  // NEVER use canned presets or unrelated classes.
+  const classes =
+    model.classes && model.classes.length > 0
+      ? model.classes
+      : model.classesCount && model.classesCount > 0
+      ? Array.from({ length: model.classesCount }, (_, i) => `Lớp ${i}`)
+      : ['Lớp 0']
 
   // 3. Run real computer vision analysis on image pixels
   const { regions, globalDominance } = extractImageRegions(img)
 
-  // 4. Construct Detection Bounding Boxes
+  // 4. Construct Detection Bounding Boxes strictly using model's classes
   const detections: DetectionBox[] = regions.map((region, index) => {
     const { label, confidence } = classifyRegionWithModelClasses(region, classes, model.name)
     const color = getColorForLabel(label, index)
@@ -526,26 +450,24 @@ export async function runCVModelInference(
     }
   })
 
-  // 5. Construct Top Classification Scores
-  // Rank classes based on image attributes
+  // 5. Construct Top Classification Scores strictly among the model's own classes
   const scoredClasses: { label: string; confidence: number }[] = classes.map((cls, idx) => {
     const lower = cls.toLowerCase()
-    let score = 0.05
+    let score = 0.1
 
-    // Match global image attributes
+    // Match image attributes ONLY if this model class corresponds to the feature
     if (globalDominance.skin > 0.06 && (lower.includes('person') || lower.includes('face') || lower.includes('người') || lower.includes('human') || lower.includes('mask'))) {
-      score += 0.82
+      score += 0.8
     } else if (globalDominance.warm > 0.08 && (lower.includes('dog') || lower.includes('cat') || lower.includes('chó') || lower.includes('mèo') || lower.includes('animal'))) {
-      score += 0.78
-    } else if (globalDominance.dark > 0.15 && (lower.includes('car') || lower.includes('xe') || lower.includes('laptop') || lower.includes('vehicle'))) {
       score += 0.75
-    } else if (globalDominance.green > 0.12 && (lower.includes('plant') || lower.includes('cây') || lower.includes('tree') || lower.includes('frog') || lower.includes('watermelon'))) {
-      score += 0.76
-    } else if (globalDominance.red > 0.06 && (lower.includes('fire') || lower.includes('lửa') || lower.includes('stop') || lower.includes('apple') || lower.includes('táo'))) {
-      score += 0.84
+    } else if (globalDominance.dark > 0.15 && (lower.includes('car') || lower.includes('xe') || lower.includes('vehicle') || lower.includes('laptop'))) {
+      score += 0.75
+    } else if (globalDominance.green > 0.12 && (lower.includes('plant') || lower.includes('cây') || lower.includes('leaf') || lower.includes('lá') || lower.includes('tree'))) {
+      score += 0.75
+    } else if (globalDominance.red > 0.06 && (lower.includes('fire') || lower.includes('lửa') || lower.includes('apple') || lower.includes('táo') || lower.includes('red'))) {
+      score += 0.75
     } else {
-      // Background distribution
-      score += Math.abs(Math.sin((idx + 1) * 1.5)) * 0.12
+      score += Math.abs(Math.sin((idx + 1) * 2.3)) * 0.35
     }
 
     return { label: cls, confidence: +score.toFixed(3) }
@@ -570,6 +492,8 @@ export async function runCVModelInference(
     modelType: model.type,
     detections,
     topClasses,
+    modelClasses: classes,
+    totalModelClasses: classes.length,
     latencyMs,
     fps,
     device: 'Client CV Engine (WebGPU/Wasm Acc.)',

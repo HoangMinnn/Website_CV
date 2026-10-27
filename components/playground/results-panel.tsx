@@ -321,7 +321,11 @@ export function ResultsPanel({
             <div className="flex items-center gap-2">
               <Tag className="w-4 h-4 text-primary" />
               <span className="text-xs font-semibold text-foreground">
-                Tập nhãn gốc từ metadata file mô hình của bạn ({availableClasses.length} nhãn):
+                {model.labelsFile
+                  ? `Tập nhãn từ file đính kèm (${availableClasses.length} nhãn):`
+                  : model.hasEmbeddedLabels
+                  ? `Tập nhãn gốc từ metadata mô hình của bạn (${availableClasses.length} nhãn):`
+                  : `Danh sách lớp của mô hình (${availableClasses.length} lớp):`}
               </span>
             </div>
             <span className="text-[10px] text-green-600 dark:text-green-400 font-medium bg-green-500/10 px-2.5 py-0.5 rounded-full border border-green-500/20 flex items-center gap-1">
