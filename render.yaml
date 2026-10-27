@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: website-cv
+    runtime: node
+    plan: free
+    buildCommand: npm install && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision && pip install --no-cache-dir -r requirements.txt && npm run build
+    startCommand: npm run serve
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=400
+      - key: PYTHON_BIN
+        value: python3

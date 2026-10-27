@@ -69,7 +69,7 @@ function findPython() {
 const CORE_PACKAGES = {
   numpy: 'numpy',
   PIL: 'pillow',
-  cv2: 'opencv-python',
+  cv2: 'opencv-python-headless',
   ultralytics: 'ultralytics',
   onnxruntime: 'onnxruntime',
   h5py: 'h5py',

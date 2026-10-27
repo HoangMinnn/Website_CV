@@ -1,8 +1,9 @@
 # Python dependencies for scripts/run_inference.py
 numpy
 pillow
-opencv-python
+opencv-python-headless
 ultralytics
 onnxruntime
-tensorflow
 h5py
+# Bỏ ghi chú tensorflow nếu bạn cần chạy mô hình .h5 / .keras (tốn nhiều RAM khi build trên host miễn phí):
+# tensorflow

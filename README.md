@@ -47,6 +47,30 @@ Lệnh này sẽ **tự động**:
 | `npm start -- --no-open` | Không tự mở trình duyệt                                  |
 | `PORT=4000 npm start`    | Đổi cổng (mặc định 3000, tự chọn cổng khác nếu bị chiếm) |
 
+## 🌐 Triển khai online lên Render.com
+
+Dự án đã có sẵn file `render.yaml`. Các bước triển khai:
+
+1. Đăng nhập [Render.com](https://render.com) bằng tài khoản GitHub của bạn.
+2. Nhấn nút **New +** ở góc trên → chọn **Web Service**.
+3. Chọn kết nối với kho lưu trữ **`Website_CV`**.
+4. Điền các thông số (hoặc Render sẽ tự nhận qua `render.yaml`):
+   - **Name:** `website-cv` (tuỳ ý)
+   - **Runtime:** `Node`
+   - **Build Command:**
+     ```bash
+     npm install && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch torchvision && pip install --no-cache-dir -r requirements.txt && npm run build
+     ```
+   - **Start Command:**
+     ```bash
+     npm run serve
+     ```
+   - **Instance Type:** Chọn gói **Free**
+   - Mở mục **Advanced** → thêm biến môi trường (Environment Variable):
+     - `NODE_VERSION` = `20`
+     - `NODE_OPTIONS` = `--max-old-space-size=400`
+5. Bấm **Deploy Web Service** và chờ Render hoàn tất build!
+
 ## 🧱 Công nghệ
 
 - **Frontend:** Next.js 16, React 19, Tailwind CSS 4

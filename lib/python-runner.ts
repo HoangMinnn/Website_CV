@@ -47,7 +47,9 @@ function cleanStderr(stderr: string): string {
 
 export function runModelScript(args: string[], timeoutMs = 300_000): Promise<PythonResult> {
   return new Promise((resolve) => {
-    const child = spawn(process.env.PYTHON_BIN || 'python', [SCRIPT, ...args], {
+    const defaultPython = process.platform === 'win32' ? 'python' : 'python3'
+    const pythonBin = process.env.PYTHON_BIN || defaultPython
+    const child = spawn(pythonBin, [SCRIPT, ...args], {
       cwd: process.cwd(),
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     })
