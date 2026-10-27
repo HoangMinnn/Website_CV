@@ -15,10 +15,19 @@ is redirected to stderr so it can never corrupt the result.
 import os
 import sys
 
-os.environ.setdefault("YOLO_VERBOSE", "False")
-os.environ.setdefault("YOLO_AUTOINSTALL", "False")
-os.environ.setdefault("YOLO_OFFLINE", "True")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ["YOLO_VERBOSE"] = "False"
+os.environ["YOLO_AUTOINSTALL"] = "False"
+os.environ["YOLO_OFFLINE"] = "True"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 import ast
 import json
@@ -60,8 +69,19 @@ class ModelError(Exception):
 
 def emit(payload):
     line = RESULT_MARKER + json.dumps(payload, ensure_ascii=False, default=str) + "\n"
-    _REAL_STDOUT.buffer.write(line.encode("utf-8"))
-    _REAL_STDOUT.flush()
+    try:
+        if hasattr(_REAL_STDOUT, "buffer"):
+            _REAL_STDOUT.buffer.write(line.encode("utf-8", errors="replace"))
+            _REAL_STDOUT.buffer.flush()
+        else:
+            _REAL_STDOUT.write(line)
+            _REAL_STDOUT.flush()
+    except Exception:
+        try:
+            _REAL_STDOUT.write(line)
+            _REAL_STDOUT.flush()
+        except Exception:
+            pass
 
 
 def color_for(i):
@@ -247,11 +267,31 @@ def load_image_rgb(path):
         raise ModelError(f"Không đọc được ảnh đầu vào ({e}). Hãy dùng ảnh JPG/PNG/WebP/BMP.")
 
 
-def preprocess(img, size_hw, channels, norm, layout="NCHW", dtype="float32", mean_std=None):
+def letterbox(img, target_hw, fill_color=(114, 114, 114)):
+    from PIL import Image
+    th, tw = target_hw
+    w, h = img.size
+    scale = min(tw / w, th / h)
+    nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    resized = img.resize((nw, nh), Image.BILINEAR)
+    new_img = Image.new("RGB", (tw, th), fill_color)
+    pad_x = (tw - nw) // 2
+    pad_y = (th - nh) // 2
+    new_img.paste(resized, (pad_x, pad_y))
+    return new_img, scale, pad_x, pad_y
+
+
+def preprocess(img, size_hw, channels, norm, layout="NCHW", dtype="float32", mean_std=None, do_letterbox=False):
     import numpy as np
     from PIL import Image
     h, w = size_hw
-    arr = np.asarray(img.resize((w, h), Image.BILINEAR)).astype(np.float32)
+    scale, pad_x, pad_y = 1.0, 0, 0
+    if do_letterbox and img.size != (w, h):
+        prep_img, scale, pad_x, pad_y = letterbox(img, (h, w))
+    else:
+        prep_img = img.resize((w, h), Image.BILINEAR) if img.size != (w, h) else img
+
+    arr = np.asarray(prep_img).astype(np.float32)
     if norm != "raw255":
         arr = arr / 255.0
     if channels == 1:
@@ -263,7 +303,7 @@ def preprocess(img, size_hw, channels, norm, layout="NCHW", dtype="float32", mea
         arr = (arr - mean) / std
     if layout == "NCHW":
         arr = arr.transpose(2, 0, 1)
-    return np.ascontiguousarray(arr[None]).astype(dtype)
+    return np.ascontiguousarray(arr[None]).astype(dtype), (scale, pad_x, pad_y)
 
 
 def looks_like_shape_error(e):
@@ -283,7 +323,14 @@ def squeeze_batch(arr):
 
 
 def output_task(arr, names):
+    import numpy as np
     a = squeeze_batch(arr)
+    # Hỗ trợ mạng CNN phân loại có output dạng (C, 1, 1) hoặc (1, C, 1, 1)
+    if a.ndim == 3 and a.shape[1] == 1 and a.shape[2] == 1:
+        a = a[:, 0, 0]
+    if a.ndim == 2 and (a.shape[0] == 1 or a.shape[1] == 1):
+        a = a.ravel()
+
     if a.ndim == 0:
         raise ModelError("Mô hình trả về một số vô hướng, không thể diễn giải.")
     if a.ndim == 1:
@@ -292,6 +339,9 @@ def output_task(arr, names):
         return "segmentation", (2 if a.shape[0] == 1 else int(a.shape[0]))
     if a.ndim == 2:
         f = min(a.shape)
+        # End-to-end NMS output: (N, 6) hoặc (N, 7) dạng [x1, y1, x2, y2, score, class_id]
+        if max(a.shape) >= 1 and (f == 6 or f == 7):
+            return "detection", len(names) or 80
         nc = len(names) if names else max(1, f - 4)
         return "detection", nc
     raise ModelError(f"Không diễn giải được đầu ra của mô hình có shape {list(arr.shape)}.")
@@ -311,7 +361,7 @@ def classify_output(arr, names):
             e = np.exp(v - v.max())
             probs = e / e.sum()
         labels = None
-    order = np.argsort(probs)[::-1][:5]
+    order = np.argsort(probs)[::-1][:min(5, len(probs))]
     out = []
     for i in order:
         lbl = labels[i] if labels is not None else label_of(names, i)
@@ -331,36 +381,75 @@ def nms_xyxy(boxes, scores, classes, iou):
     return np.array(idx).reshape(-1).tolist() if len(idx) else []
 
 
-def decode_yolo_raw(arr, names, conf, iou, in_hw):
+def decode_yolo_raw(arr, names, conf, iou, in_hw, orig_wh=None, letterbox_info=None):
     import numpy as np
     a = squeeze_batch(arr)
+
+    # 1. Định dạng End-to-End NMS: [N, 6] hoặc [N, 7]
+    if a.ndim == 2 and a.shape[1] in (6, 7) and a.shape[0] < a.shape[1] * 100:
+        dets = []
+        for j, row in enumerate(a):
+            x1, y1, x2, y2, sc, cid = float(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4]), int(row[5])
+            if sc < conf:
+                continue
+            if letterbox_info and orig_wh:
+                scale, pad_x, pad_y = letterbox_info
+                norm_x1 = (x1 - pad_x) / (orig_wh[0] * scale)
+                norm_y1 = (y1 - pad_y) / (orig_wh[1] * scale)
+                norm_x2 = (x2 - pad_x) / (orig_wh[0] * scale)
+                norm_y2 = (y2 - pad_y) / (orig_wh[1] * scale)
+            else:
+                norm_x1, norm_y1, norm_x2, norm_y2 = x1 / in_hw[1], y1 / in_hw[0], x2 / in_hw[1], y2 / in_hw[0]
+            dets.append(make_det(j, label_of(names, cid), int(cid), float(sc), norm_x1, norm_y1, norm_x2, norm_y2))
+        return dets
+
+    # 2. Định dạng chuẩn YOLO: [N, 4 + nc]
     if a.shape[0] < a.shape[1]:
-        a = a.T  # -> [N, F]
+        a = a.T  # -> [N, F], ví dụ [8400, 84]
     n_feat = a.shape[1]
     nc = len(names)
     v5 = bool(nc) and n_feat == 5 + nc
     if n_feat < 5:
-        raise ModelError(f"Đầu ra dạng {list(arr.shape)} không giống định dạng phát hiện vật thể YOLO.")
+        raise ModelError(f"Đầu ra dạng {list(arr.shape)} không khớp định dạng phát hiện vật thể YOLO.")
+
     boxes = a[:, :4].astype(np.float32)
     if v5:
         scores_all = a[:, 5:5 + nc] * a[:, 4:5]
     else:
         scores_all = a[:, 4:4 + nc] if nc else a[:, 4:]
+
+    # Sigmoid nếu đầu ra là raw logits
+    if scores_all.max() > 1.0 or scores_all.min() < 0.0:
+        scores_all = 1.0 / (1.0 + np.exp(-np.clip(scores_all, -25.0, 25.0)))
+
     cls = scores_all.argmax(1)
     sc = scores_all.max(1)
     keep = sc >= conf
     boxes, cls, sc = boxes[keep], cls[keep], sc[keep]
+
     in_h, in_w = in_hw
     if len(boxes) and boxes.max() <= 1.5:
         boxes = boxes * np.array([in_w, in_h, in_w, in_h], dtype=np.float32)
+
+    # Chuyển cx, cy, w, h -> x1, y1, x2, y2 trong tọa độ letterbox
     xyxy = np.stack([boxes[:, 0] - boxes[:, 2] / 2, boxes[:, 1] - boxes[:, 3] / 2,
                      boxes[:, 0] + boxes[:, 2] / 2, boxes[:, 1] + boxes[:, 3] / 2], 1) if len(boxes) else boxes
+
     keep_idx = nms_xyxy(xyxy, sc, cls, iou)[:300]
     dets = []
     for j, k in enumerate(keep_idx):
         x1, y1, x2, y2 = xyxy[k]
+        if letterbox_info and orig_wh:
+            scale, pad_x, pad_y = letterbox_info
+            norm_x1 = (x1 - pad_x) / (orig_wh[0] * scale)
+            norm_y1 = (y1 - pad_y) / (orig_wh[1] * scale)
+            norm_x2 = (x2 - pad_x) / (orig_wh[0] * scale)
+            norm_y2 = (y2 - pad_y) / (orig_wh[1] * scale)
+        else:
+            norm_x1, norm_y1, norm_x2, norm_y2 = x1 / in_w, y1 / in_h, x2 / in_w, y2 / in_h
+
         dets.append(make_det(j, label_of(names, cls[k]), int(cls[k]), float(sc[k]),
-                             x1 / in_w, y1 / in_h, x2 / in_w, y2 / in_h))
+                             norm_x1, norm_y1, norm_x2, norm_y2))
     return dets
 
 
@@ -553,7 +642,7 @@ def run_with_runner(runner, args, img, names, base, notes):
 
     out, used, last_err = None, None, None
     for hw in sizes:
-        x = preprocess(probe, hw, runner.channels, norm, runner.layout, runner.dtype, runner.mean_std)
+        x, _ = preprocess(probe, hw, runner.channels, norm, runner.layout, runner.dtype, runner.mean_std, do_letterbox=False)
         try:
             out = runner.forward(x)
             used = hw
@@ -575,6 +664,11 @@ def run_with_runner(runner, args, img, names, base, notes):
     if not names:
         notes.append("Mô hình không lưu tên nhãn trong file. Kết quả tạm thời hiển thị theo chỉ số lớp (Lớp 0, Lớp 1...). "
                      "Bạn có thể tải thêm file nhãn (.txt/.yaml/.json) để hiển thị tên đối tượng.")
+
+    # Mô hình object detection luôn được huấn luyện với chuẩn hóa [0, 1] (zero_one)
+    if task == "detection" and (not args.norm or args.norm == "auto") and norm != "raw255":
+        norm = "zero_one"
+
     in_shape = (f"1 x {runner.channels} x {used[0]} x {used[1]}" if runner.layout == "NCHW"
                 else f"1 x {used[0]} x {used[1]} x {runner.channels}")
     pre = {"imgsz": [used[0], used[1]], "norm": NORM_LABELS.get(norm, norm), "normKey": norm,
@@ -582,8 +676,9 @@ def run_with_runner(runner, args, img, names, base, notes):
     if args.inspect:
         return inspect_payload(dict(base, preprocess=pre), task, names, nc, runner.input_desc or in_shape, notes)
 
-    # timed run (second pass excludes CUDA/ORT warm-up)
-    x = preprocess(img, used, runner.channels, norm, runner.layout, runner.dtype, runner.mean_std)
+    # Chạy suy luận thực tế với ảnh đầu vào: sử dụng letterbox cho detection để không méo tỉ lệ ảnh
+    do_lb = (task == "detection")
+    x, lb_info = preprocess(img, used, runner.channels, norm, runner.layout, runner.dtype, runner.mean_std, do_letterbox=do_lb)
     t0 = time.time()
     out = runner.forward(x)
     latency = (time.time() - t0) * 1000
@@ -597,7 +692,7 @@ def run_with_runner(runner, args, img, names, base, notes):
         extra.update({"segMask": seg_png, "segStats": stats, "topClasses": top})
         names = names or seg_names
     else:
-        dets = decode_yolo_raw(out, names, args.conf, args.iou, used)
+        dets = decode_yolo_raw(out, names, args.conf, args.iou, used, orig_wh=img.size, letterbox_info=lb_info if do_lb else None)
         extra.update({"detections": dets, "topClasses": summarize_dets(dets)})
     return finalize(base, task, names, nc, latency, extra)
 
@@ -862,7 +957,8 @@ def run_tv_segmentation(model, args, img, names, base, notes, nc):
     w, h = img.size
     scale = 520.0 / min(w, h)
     size = (max(1, int(round(h * scale))), max(1, int(round(w * scale))))
-    x = torch.from_numpy(preprocess(img, size, 3, "imagenet")).to(device)
+    x_arr, _ = preprocess(img, size, 3, "imagenet")
+    x = torch.from_numpy(x_arr).to(device)
     with torch.no_grad():
         model(x)
         t0 = time.time()
@@ -878,6 +974,18 @@ def run_tv_segmentation(model, args, img, names, base, notes, nc):
 
 def handle_torch(args, img, labels, base):
     import torch
+
+    # 1. Thử nạp trực tiếp qua Ultralytics YOLO trước (hỗ trợ toàn diện YOLOv5, YOLOv8, YOLOv9, YOLOv10, YOLOv11, RT-DETR...)
+    # Tránh lỗi unpickle / ModuleNotFoundError khi dùng torch.load gốc
+    try:
+        from ultralytics import YOLO
+        ym = YOLO(args.model)
+        del ym
+        return run_ultralytics(args, args.image, labels, dict(base, framework="Ultralytics YOLO (PyTorch)"))
+    except Exception:
+        pass
+
+    # 2. Nếu không phải Ultralytics YOLO, nạp qua TorchScript hoặc PyTorch Module/state_dict
     kind, obj = torch_load_any(args.model)
     notes = []
     if kind == "torchscript":
@@ -948,11 +1056,6 @@ def handle_onnx(args, img, labels, base):
             raise ModelError(f"Không mở được file ONNX: {e}")
     meta = sess.get_modelmeta()
     custom = dict(meta.custom_metadata_map or {})
-    if "names" in custom and ("ultralytics" in custom.get("author", "").lower() or "stride" in custom):
-        del sess
-        return run_ultralytics(args, args.image, labels, dict(base, framework="Ultralytics YOLO (ONNX)"),
-                               task_hint=custom.get("task"))
-
     names = labels or names_to_list(custom.get("names") or custom.get("classes") or custom.get("labels"))
     inp = sess.get_inputs()[0]
     shape = list(inp.shape)
@@ -976,9 +1079,12 @@ def handle_onnx(args, img, labels, base):
         return sess.run(None, {inp.name: x})[0]
 
     runner = Runner(fwd, channels=channels, layout=layout, fixed_hw=fixed, dtype=dtype,
-                    default_norm="raw255" if dtype == "uint8" else "imagenet", device_label=dev,
+                    default_norm="raw255" if dtype == "uint8" else "zero_one", device_label=dev,
                     input_desc=" x ".join(str(s) for s in shape))
-    base = dict(base, framework="ONNX Runtime", architecture=meta.graph_name or meta.producer_name or "ONNX graph")
+    arch = meta.graph_name or meta.producer_name or "ONNX graph"
+    if "ultralytics" in custom.get("author", "").lower() or "stride" in custom:
+        arch = f"Ultralytics YOLO (ONNX - {custom.get('task', 'detect')})"
+    base = dict(base, framework="ONNX Runtime", architecture=arch)
     return run_with_runner(runner, args, img, names, base, [])
 
 

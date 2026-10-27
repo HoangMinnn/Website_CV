@@ -95,13 +95,15 @@ export default function PlaygroundPage() {
         setResults(data)
         setIsRunning(false)
       } else {
-        // Python server not configured or error -> Fallback gracefully!
-        console.warn('Backend inference failed, falling back to browser CV engine:', data?.error)
-        await runBrowserFallback('Client CV Engine (Chế độ dự phòng khi máy chưa có thư viện Python)')
+        const errorMsg = data?.error || 'Quá trình suy luận mô hình trên máy chủ thất bại.'
+        console.error('Backend inference failed:', errorMsg)
+        setInferenceError(errorMsg)
+        setIsRunning(false)
       }
     } catch (err: any) {
-      console.warn('Backend unreachable, falling back to browser CV engine:', err)
-      await runBrowserFallback('Client CV Engine (Trình duyệt độc lập)')
+      console.error('Backend inference error:', err)
+      setInferenceError(`Không thể kết nối tới máy chủ AI: ${err.message || err}`)
+      setIsRunning(false)
     }
   }
 

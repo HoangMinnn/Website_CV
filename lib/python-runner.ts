@@ -51,7 +51,14 @@ export function runModelScript(args: string[], timeoutMs = 300_000): Promise<Pyt
     const pythonBin = process.env.PYTHON_BIN || defaultPython
     const child = spawn(pythonBin, [SCRIPT, ...args], {
       cwd: process.cwd(),
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      env: {
+        ...process.env,
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
+        YOLO_AUTOINSTALL: 'False',
+        YOLO_OFFLINE: 'True',
+        YOLO_VERBOSE: 'False',
+      },
     })
     let stdout = ''
     let stderr = ''

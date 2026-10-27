@@ -182,19 +182,15 @@ export function ModelUploadZone({ currentModel, onModelSelect }: ModelUploadZone
         notes = Array.isArray(data.notes) ? data.notes : []
         setAnalysisError(null)
       } else {
-        // Smart client-side fallback if server lacks Python/Torch
-        isFallback = true
+        const errMsg = data?.error || 'Máy chủ không thể đọc hoặc phân tích mô hình này.'
+        setAnalysisError(errMsg)
         detectedClasses = clientParsedLabels
         detectedCount = detectedClasses.length
         hasEmbedded = false
         notes = [
-          '⚡ Chế độ Client CV: Máy chủ chưa có thư viện Python đầy đủ.',
-          'Mô hình sẽ chạy suy luận trực tiếp trên trình duyệt (WebGPU/Wasm).'
+          `⚠️ ${errMsg}`,
+          'Vui lòng kiểm tra định dạng file (.pt, .onnx, .tflite, .h5) hoặc cấu trúc mạng.'
         ]
-        if (detectedClasses.length === 0) {
-          notes.push('⚠️ Chưa có file nhãn đi kèm. Bạn hãy tải file nhãn (.txt/.yaml/.json) để hiển thị đúng tên đối tượng.')
-        }
-        setAnalysisError(null)
       }
 
       setSelectedTask(finalTask)
