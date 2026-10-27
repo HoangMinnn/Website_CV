@@ -1090,11 +1090,64 @@ def handle_onnx(args, img, labels, base):
 
 # --------------------------------------------------------------------------- tensorflow
 def handle_tf(args, img, labels, base, ext):
+    tf = None
     try:
         import tensorflow as tf
-    except ImportError:
+    except Exception:
+        tf = None
+
+    # Nếu chưa có TensorFlow mà người dùng tải file .h5 / .keras, phân tích kiến trúc trực tiếp bằng h5py
+    if tf is None and ext in (".h5", ".keras"):
+        try:
+            import h5py
+            with h5py.File(args.model, "r") as f:
+                model_config_raw = f.attrs.get("model_config")
+                if not model_config_raw:
+                    raise ModelError(
+                        "File .h5 này chỉ chứa trọng số (weights-only HDF5), không kèm cấu trúc kiến trúc mạng Keras (thiếu 'model_config'). "
+                        "Để chạy trực tiếp, hãy lưu toàn bộ mô hình bằng `model.save('model.h5')` hoặc xuất sang ONNX.")
+                if isinstance(model_config_raw, bytes):
+                    model_config_raw = model_config_raw.decode("utf-8", errors="replace")
+                cfg = json.loads(model_config_raw)
+                model_name = cfg.get("config", {}).get("name") or cfg.get("class_name") or "Keras Model"
+                layers = cfg.get("config", {}).get("layers", [])
+
+                in_shape = "None x 224 x 224 x 3"
+                if layers:
+                    first_cfg = layers[0].get("config", {})
+                    bshape = first_cfg.get("batch_input_shape") or first_cfg.get("batch_shape")
+                    if bshape:
+                        in_shape = " x ".join(str(s) for s in bshape)
+
+                nc = 2
+                dense_layers = [l for l in layers if l.get("class_name") == "Dense"]
+                if dense_layers:
+                    u = dense_layers[-1].get("config", {}).get("units")
+                    if isinstance(u, int) and u > 0:
+                        nc = 2 if u == 1 else u
+
+                notes = [
+                    "Đã đọc cấu trúc mô hình Keras thành công từ metadata HDF5.",
+                    "Gợi ý: Nếu cần chạy suy luận trực tiếp file .h5 trên máy chủ, hãy đảm bảo máy chủ đã cài `tensorflow-cpu` "
+                    "(đã được thêm vào requirements.txt) hoặc xuất mô hình sang ONNX."
+                ]
+                base = dict(base, framework="Keras (TensorFlow)", architecture=model_name)
+                if args.inspect:
+                    return inspect_payload(base, "classification", labels, nc, in_shape, notes)
+                else:
+                    raise ModelError(
+                        "Máy chủ hiện chưa cài đặt tensorflow-cpu để chạy suy luận file .h5 này. "
+                        "Hệ thống đã thêm `tensorflow-cpu` vào requirements.txt để tự động cài đặt trên Render, "
+                        "hoặc bạn có thể xuất mô hình sang định dạng ONNX để thực thi mọi lúc.")
+        except Exception as e:
+            if isinstance(e, ModelError):
+                raise
+            raise ModelError(f"Máy chưa cài TensorFlow nên không chạy được file {ext} ({e}). Cài bằng: pip install tensorflow-cpu, hoặc export mô hình sang ONNX.")
+
+    if tf is None:
         raise ModelError(f"Máy chưa cài TensorFlow nên không chạy được file {ext}. "
-                         "Cài bằng: pip install tensorflow, hoặc export mô hình sang ONNX.")
+                         "Cài bằng: pip install tensorflow-cpu, hoặc export mô hình sang ONNX.")
+
     names = labels
     if ext == ".tflite":
         interp = tf.lite.Interpreter(model_path=args.model)
@@ -1120,20 +1173,26 @@ def handle_tf(args, img, labels, base, ext):
         try:
             model = tf.keras.models.load_model(args.model, compile=False, safe_mode=False)
         except Exception:
-            # Check if this is a weights-only HDF5 file
             try:
-                import h5py
-                with h5py.File(args.model, "r") as f:
-                    attrs = list(f.attrs.keys())
-                    if "model_config" not in attrs:
-                        raise ModelError(
-                            "File .h5 này chỉ chứa trọng số (weights-only HDF5), không kèm cấu trúc kiến trúc mạng Keras (thiếu 'model_config'). "
-                            "Để chạy trực tiếp, hãy lưu toàn bộ mô hình bằng `model.save('model.h5')` hoặc `model.save('model.keras')`, "
-                            "hoặc xuất sang định dạng ONNX.")
-            except Exception as h5_err:
-                if isinstance(h5_err, ModelError):
-                    raise h5_err
-            raise ModelError(f"Không thể nạp mô hình TensorFlow/Keras: {e_primary}")
+                import tf_keras
+                model = tf_keras.models.load_model(args.model, compile=False)
+            except Exception:
+                pass
+            if model is None:
+                # Check if this is a weights-only HDF5 file
+                try:
+                    import h5py
+                    with h5py.File(args.model, "r") as f:
+                        attrs = list(f.attrs.keys())
+                        if "model_config" not in attrs:
+                            raise ModelError(
+                                "File .h5 này chỉ chứa trọng số (weights-only HDF5), không kèm cấu trúc kiến trúc mạng Keras (thiếu 'model_config'). "
+                                "Để chạy trực tiếp, hãy lưu toàn bộ mô hình bằng `model.save('model.h5')` hoặc `model.save('model.keras')`, "
+                                "hoặc xuất sang định dạng ONNX.")
+                except Exception as h5_err:
+                    if isinstance(h5_err, ModelError):
+                        raise h5_err
+                raise ModelError(f"Không thể nạp mô hình TensorFlow/Keras: {e_primary}")
 
     # Inspect input shape
     shape = None

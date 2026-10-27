@@ -5,5 +5,5 @@ opencv-python-headless
 ultralytics
 onnxruntime
 h5py
-# Bỏ ghi chú tensorflow nếu bạn cần chạy mô hình .h5 / .keras (tốn nhiều RAM khi build trên host miễn phí):
-# tensorflow
+# Hỗ trợ mô hình .h5 / .keras / .tflite bằng tensorflow-cpu nhẹ và tối ưu cho CPU:
+tensorflow-cpu
