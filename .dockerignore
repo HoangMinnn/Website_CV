@@ -1,0 +1,12 @@
+node_modules
+.next
+.temp_inference
+.git
+.github
+.vercel
+*.zip
+*.log
+__pycache__
+*.pyc
+*.tsbuildinfo
+.env*.local

@@ -1,0 +1,76 @@
+name: Deploy to Hugging Face Spaces
+
+# Every push to main re-deploys the website to a free Hugging Face Space.
+# One-time setup: add a repository secret named HF_TOKEN (a Hugging Face token with "write" access).
+# Optional: add a repository variable HF_SPACE (e.g. "my-username/ai-lab"); default is "<your-hf-username>/ai-lab".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: hf-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install huggingface_hub
+        run: pip install -U huggingface_hub
+
+      - name: Add Hugging Face Space metadata to README
+        run: |
+          {
+            echo '---'
+            echo 'title: AI Lab'
+            echo 'emoji: 🧪'
+            echo 'colorFrom: indigo'
+            echo 'colorTo: purple'
+            echo 'sdk: docker'
+            echo 'app_port: 7860'
+            echo 'pinned: false'
+            echo 'short_description: Computer Vision AI Lab - test your models online'
+            echo '---'
+            echo
+            cat README.md
+          } > README.hf.md
+          mv README.hf.md README.md
+
+      - name: Upload to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          python - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+
+          token = os.environ.get("HF_TOKEN")
+          if not token:
+              raise SystemExit("Missing HF_TOKEN secret. Add it in GitHub: Settings > Secrets and variables > Actions.")
+          api = HfApi(token=token)
+          space = os.environ.get("HF_SPACE") or f"{api.whoami()['name']}/ai-lab"
+
+          api.create_repo(space, repo_type="space", space_sdk="docker", exist_ok=True)
+          api.upload_folder(
+              folder_path=".",
+              repo_id=space,
+              repo_type="space",
+              commit_message=f"Deploy from GitHub {os.environ.get('GITHUB_SHA', '')[:7]}",
+              ignore_patterns=[".git/*", ".github/*", "node_modules/*", ".next/*", ".temp_inference/*", "*.zip"],
+          )
+          owner, name = space.split("/")
+          url = f"https://{owner}-{name}.hf.space".lower().replace("_", "-").replace(".", "-")
+          print(f"Deployed! Space: https://huggingface.co/spaces/{space}")
+          print(f"Website:        {url}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write(f"### 🚀 Deployed\n- Space: https://huggingface.co/spaces/{space}\n- Website: {url}\n")
+          EOF
