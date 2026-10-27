@@ -3,8 +3,8 @@ import path from 'path'
 import fs from 'fs'
 
 export const RESULT_MARKER = '__AILAB_RESULT__'
-const SCRIPT = path.join(process.cwd(), 'scripts', 'run_inference.py')
-const TEMP_DIR = path.join(process.cwd(), '.temp_inference')
+const SCRIPT = path.join(/*turbopackIgnore: true*/ process.cwd(), 'scripts', 'run_inference.py')
+const TEMP_DIR = path.join(/*turbopackIgnore: true*/ process.cwd(), '.temp_inference')
 
 export type PythonResult = { ok: true; data: any } | { ok: false; error: string }
 
