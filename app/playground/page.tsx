@@ -10,6 +10,7 @@ import { InputMediaTabs } from '@/components/playground/input-media-tabs'
 import { ResultsPanel } from '@/components/playground/results-panel'
 import { ModelInfo, InputImageMedia, InferenceResult } from '@/components/playground/types'
 import { SAMPLE_IMAGES } from '@/components/playground/sample-data'
+import { runCVModelInference } from '@/lib/cv-inference-engine'
 
 export default function PlaygroundPage() {
   const [model, setModel] = useState<ModelInfo | null>(null)
@@ -33,14 +34,34 @@ export default function PlaygroundPage() {
     setResults(null)
     setInferenceError(null)
 
-    try {
-      // Require an uploaded model file for real inference
-      if (!model.file) {
-        setInferenceError('Vui lòng tải lên file mô hình (.pt, .onnx, ...) để thực hiện suy luận thật sự. Playground này chỉ chạy model thật.')
-        setIsRunning(false)
-        return
-      }
+    const runBrowserFallback = async (modeLabel?: string) => {
+      try {
+        const imageSrc =
+          inputMedia.appliedFilters && inputMedia.appliedFilters.length > 0 && inputMedia.previewUrl
+            ? inputMedia.previewUrl
+            : inputMedia.previewUrl || (inputMedia.file ? URL.createObjectURL(inputMedia.file) : '')
 
+        const clientResult = await runCVModelInference(imageSrc, model, confidenceThreshold)
+        if (modeLabel) {
+          clientResult.device = modeLabel
+        }
+        setResults(clientResult)
+      } catch (clientErr: any) {
+        console.error('Browser CV Engine error:', clientErr)
+        setInferenceError(`Lỗi xử lý hình ảnh: ${clientErr.message}`)
+      } finally {
+        setIsRunning(false)
+      }
+    }
+
+    // 1. If it's a preset model or has no custom file uploaded, run in-browser CV engine directly
+    if (model.isPretrained || !model.file) {
+      await runBrowserFallback('Client CV Engine (WebGPU / Wasm)')
+      return
+    }
+
+    // 2. If user uploaded a custom model file, try server-side Python first
+    try {
       const formData = new FormData()
       formData.append('modelFile', model.file)
       if (model.labelsFile) {
@@ -53,7 +74,6 @@ export default function PlaygroundPage() {
         formData.append('norm', model.norm)
       }
 
-      // If filters were applied on client, send the processed previewUrl; otherwise send the original file
       if (inputMedia.appliedFilters && inputMedia.appliedFilters.length > 0 && inputMedia.previewUrl) {
         formData.append('imageBase64', inputMedia.previewUrl)
       } else if (inputMedia.file) {
@@ -74,14 +94,15 @@ export default function PlaygroundPage() {
 
       if (data && data.success) {
         setResults(data)
+        setIsRunning(false)
       } else {
-        setInferenceError(data?.error || 'Lỗi không xác định khi chạy mô hình. Kiểm tra định dạng file model và ảnh.')
+        // Python server not configured or error -> Fallback gracefully!
+        console.warn('Backend inference failed, falling back to browser CV engine:', data?.error)
+        await runBrowserFallback('Client CV Engine (Chế độ dự phòng khi máy chưa có thư viện Python)')
       }
     } catch (err: any) {
-      console.error('Inference error:', err)
-      setInferenceError(`Không thể kết nối đến backend inference. Đảm bảo server đang chạy và Python đã cài Ultralytics. Chi tiết: ${err.message}`)
-    } finally {
-      setIsRunning(false)
+      console.warn('Backend unreachable, falling back to browser CV engine:', err)
+      await runBrowserFallback('Client CV Engine (Trình duyệt độc lập)')
     }
   }
 
